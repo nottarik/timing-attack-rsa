@@ -1,0 +1,52 @@
+% poglavlje_5.tex — Zaključak
+
+\chapter{Zaključak}
+\label{ch:zakljucak}
+
+\section{Pregled postignutih rezultata}
+
+U ovom radu provedena je eksperimentalna analiza timing i cache timing side-channel napada nad RSA implementacijom zasnovanom na algoritmu kvadriraj-i-množi. Eksperimenti su provedeni na modernom hardveru (Intel i5-1335U, Raptor Lake) pod Ubuntu Linux operativnim sistemom, s preciznim mjerenjem CPU ciklusa. Ukupno je provedeno sedam eksperimenata koji pokrivaju detekciju vremenskog curenja, praktični napad rekonstrukcije ključa, sistematsku analizu svih bit-pozicija, evaluaciju kontramjera, te Flush+Reload cache napad.
+
+Provedena analiza potvrdila je sve tri postavljene hipoteze: vremensko curenje u naivnoj kvadriraj-i-množi implementaciji je mjerljivo i iskoristivo, klasične kontramjere pokazuju ograničenja, a cache bazirani napadi nude znatno jači signal. Zajedno, ovi nalazi eksperimentalno demonstriraju na modernom hardveru ono što teorijska literatura predviđa, da kriptografska korektnost implementacije ne implicira njenu sigurnost.
+
+Eksperimenti su potvrdili postojanje mjerljivog vremenskog curenja od $+75{,}90$ CPU ciklusa u naivnoj implementaciji (Cohen-ov $d = 0{,}134$, $p < 10^{-50}$), koje omogućava potpunu slijepu rekonstrukciju 64-bitnog privatnog ključa sa 100\% tačnošću, pri čemu napadački kod nikada nije imao pristup vrijednosti tajnog ključa. Analiza pozicija bita potvrdila je da curenje nije ograničeno na jednu poziciju, već je prisutno na svim 64 pozicijama. Implementacija s konstantnim vremenom potpuno eliminiše curenje ($d \approx 0$, $p = 0{,}84$), a tačnost napada pada na razinu slučajnog pogađanja ($\approx 50\%$).
+\\
+
+\section{Implikacije za praktičnu kriptografsku sigurnost}
+
+\subsection{Neintuitivnost ranjivosti}
+Naivna kvadriraj-i-množi implementacija matematički je potpuno ispravna i ranjivost ne leži u matematici nego u fizičkoj realizaciji, što ilustrira ključnu pouku: \textit{kriptografska sigurnost zahtijeva razmatranje izvedbe, a ne samo matematičke ispravnosti.} Ova neintuitivnost čini side-channel ranjivosti posebno opasnim: ne može ih otkriti ni formalna provjera ispravnosti ni standardno testiranje.
+
+\subsection{Zavisnost od kompajlera nije sigurnost}
+Eksperiment 5 potvrđuje da oslanjanje na kompajlerske optimizacije za sigurnosne mjere nije prihvatljiva opcija: nijedan testirani nivo nije generisao kod s konstantnim vremenom. Programer koji se osloni na kompajler ostaje nesvjesno izložen.
+
+\subsection{Blinding ima ograničenja}
+Eksperiment 6 pokazuje da blinding, iako efikasna kontramjera za operand-zavisne timing leake u realnom RSA \cite{brumley2003}, ne štiti od vremenskog curenja koje zavisi od grananja. Sigurna implementacija zahtijeva kombinaciju više tehnika: vremenski konstantne algoritme, blinding za maskiranje operand-zavisnih operacija u višepreciznoj aritmetici, te vremenski konstantne aritmetičke primitive.
+
+\section{Ograničenja i mogući pravci daljeg istraživanja}
+
+\subsection{Ograničenja}
+
+\begin{enumerate}
+
+\item \textbf{Veličina ključa (64 vs 2048+ bita).} Eksperiment koristi 64-bitni privatni eksponent i 61-bitni Mersenne modulus. Stvarni RSA koristi eksponente od 2048 do 4096 bita. Mehanizam je identičan za svaki bit, i napad se sa istim metodologijama skalira linearno s brojem bita, ali ukupno trajanje eksperimenta i broj potrebnih mjerenja proporcionalno rastu. Zaključci o detektabilnosti signala (Cohen-ov $d$, statistički testovi) direktno se prenose na veće ključeve jer su zasnovani na analizi po bitu.
+
+\item \textbf{Jedna platforma (x86\_64, Intel Raptor Lake).} Svi eksperimenti provedeni su na jednoj mašini s jednim procesorom. Vrijednosti timing signala ($\approx 76$ ciklusa), razina šuma ($\sigma \approx 567$) i potreban broj mjerenja ($K = 2000$) specifični su za ovu arhitekturu, frekvenciju i njene karakteristike. ARM procesori, starije generacije Intela ili AMD platforme mogu imati drugačije karakteristike, što bi utjecalo na konkretne vrijednosti, ali ne i na korišten mehanizam curenja informacija.
+
+\item \textbf{Lokalni model prijetnji (\textit{threat model}).} Napadač u ovom eksperimentu pokreće kod na istoj mašini kao i žrtva, bez mrežnog kašnjenja. Brumley i Boneh \cite{brumley2003} demonstrirali su da je napad izvodljiv i u mrežnom okruženju, ali uz daleko veći broj mjerenja i komplikovanije metode pojačavanja signala. Naš lokalni eksperimentalni postav idealizira uslove i daje značajno čišći signal od realnog mrežnog napada.
+
+\item \textbf{Algoritam kvadriraj-i-množi ili moderni algoritmi.} Moderne kriptografske biblioteke (OpenSSL, libgcrypt) rijetko koriste naivni kvadriraj-i-množi s eksplicitnim grananjem. Ovaj rad demonstrira glavni princip, ali direktna primjena na moderne biblioteke zahtijevala bi analizu specifičnih implementacija. Ipak, razumijevanje naivne implementacije nužan je uslov za analizu komplikovanijih varijanti.
+
+\end{enumerate}
+
+\subsection{Pravci daljeg istraživanja}
+Prirodni nastavak ovog rada mogao bi ići u dva smjera, i to prema realističnijem modelu prijetnji, ili prema složenijim kriptografskim primitivama:
+
+\begin{itemize}
+\item Analizu napada u mrežnom scenariju, replikacijom eksperimenta na mreži.
+\item Evaluaciju Prime+Probe napada koji ne zahtijeva dijeljenu memoriju i radi između virtualnih mašina.
+\item Analizu timing napada na eliptičnu kriptografiju (ECDSA, ECDH), gdje su side-channel ranjivosti kompleksnije ali prisutne.
+\item Analizu timing napada nad postkvantnim algoritmima.
+\end{itemize}
+
+\noindent Rezultati potvrđuju da timing i cache side-channel napadi na RSA imaju praktičnu primjenjivost na modernom hardveru, i dok kriptografski algoritmi postaju sve robusniji, sigurnost implementacije ostaje otvoren problem koji zahtijeva jednaku pažnju kao i matematički temelji na kojima počivaju.

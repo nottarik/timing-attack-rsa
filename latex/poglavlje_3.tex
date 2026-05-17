@@ -1,0 +1,367 @@
+% poglavlje_3.tex — Implementacija i eksperimentalni dizajn
+
+\chapter{Implementacija i eksperimentalni dizajn}
+\label{ch:implementacija}
+
+\section{Formalni eksperimentalni okvir}
+
+\subsection{Hipoteze}
+
+Eksperiment testira sljedeće statističke hipoteze na razini značajnosti $\alpha = 0{,}05$:
+
+\begin{description}
+\item[$H_0$ (nulta hipoteza):] $\mathbb{E}[T \mid d[i]=0] = \mathbb{E}[T \mid d[i]=1]$ \\
+Trajanje modularne eksponencijacije ne zavisi od vrijednosti bita eksponenta.
+\item[$H_1$ (alternativna hipoteza):] $\mathbb{E}[T \mid d[i]=0] \neq \mathbb{E}[T \mid d[i]=1]$ \\
+Postoji statistički značajna razlika u trajanju između slučajeva bit=0 i bit=1.
+\end{description}
+
+Odbacivanje $H_0$ u korist $H_1$ pruža statistički dokaz o curenju informacija.
+
+\subsection{Eksperimentalne varijable}
+
+\begin{description}
+\item[Nezavisna varijabla:] Vrijednost ciljanog bita privatnog eksponenta ($d[i] \in \{0, 1\}$).
+\item[Zavisna varijabla:] Trajanje modularne eksponencijacije u CPU ciklusima ($T$).
+\item[Kontrolisane varijable:] Baza ($M$), modulus ($n$), Hammingova težina eksponenta izvan pozicije $i$, CPU frekvencija, te CPU afinitet.
+\end{description}
+
+\section{Testna platforma i priprema okruženja}
+
+\subsection{Specifikacije testne platforme}
+
+Eksperiment je proveden na sljedećoj platformi:
+
+\begin{table}[H]
+\centering
+\caption{Specifikacije testne platforme}
+\label{tab:platforma}
+\begin{tabular}{ll}
+\toprule
+\textbf{Komponenta} & \textbf{Specifikacija} \\
+\midrule
+Računar & Lenovo ThinkPad T14 Gen 4 \\
+Procesor & Intel Core i5-1335U (Raptor Lake, 13. gen.) \cite{intel_raptor_lake} \\
+Arhitektura & Hibridna: 2 P-core + 4 E-core (10 fizičkih jezgri i 12 niti) \\
+Cache & L1/L2 privatni po jezgrama, L3: 12\,MB Intel Smart Cache \\
+RAM & 16 GB LPDDR5 \\
+Operativni sistem & Ubuntu Linux 24.04 LTS \\
+Kernel & 6.17.0-19-generic (x86\_64) \\
+Kompajler & GCC 13.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Kontrola eksperimentalnih uslova}
+
+Za standardizaciju mjerenja primijenjene su sljedeće mjere izolacije šuma koje se koriste u literaturi timing side-channel napada \cite{brumley2003, kocher1996}:
+
+\begin{itemize}
+\item \textbf{Fiksna frekvencija procesora:} Isključen Turbo Boost i postavljen \texttt{performance} governor (koji zamjenjuje podrazumijevani \texttt{powersave} governor s \texttt{intel\_pstate} upravljačem) kako bi TSC ciklusi odgovarali konstantnoj količini procesorskog rada.
+\item \textbf{CPU afinitet:} Proces fiksiran na P-core 0 (\texttt{sched\_setaffinity}) čime se eliminira varijansa uzrokovana migracijom između jezgri s različitim latencijama.
+\item \textbf{Zagrijavanje:} Prvih 10\,000 iteracija se odbacuje radi stabilizacije cache memorije, branch prediktora i termičkog stanja procesora.
+\end{itemize}
+
+Izmjerena TSC frekvencija iznosi $\approx 2{,}101$ GHz, što odgovara nominalnoj frekvenciji i potvrđuje invarijantnost TSC-a. Detalji konfiguracije (komande, parametri) dati su u Prilogu \ref{app:hw_config}.
+
+\section{Implementacija mjerenja vremena}
+\label{sec:timing_impl}
+
+\subsection{RDTSC s CPUID serijalizacijom}
+
+Za precizno mjerenje CPU ciklusa implementirano je mjerenje preporučeno od strane Intela \cite{intel_bench}:
+
+\begin{lstlisting}[language=C, caption={Serijalizovano čitanje TSC -- početak mjerenja}, label=lst:tsc_start]
+static inline uint64_t tsc_start(void) {
+    uint32_t lo, hi;
+    __asm__ __volatile__ (
+        "CPUID\n\t"   
+        "RDTSC\n\t"   /* Citaj TSC u EDX:EAX */
+        "mov %%edx, %0\n\t"
+        "mov %%eax, %1\n\t"
+        : "=r"(hi), "=r"(lo)
+        :: "%rax", "%rbx", "%rcx", "%rdx"
+    );
+    return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=C, caption={Serijalizovano čitanje TSC -- kraj mjerenja}, label=lst:tsc_end]
+static inline uint64_t tsc_end(void) {
+    uint32_t lo, hi;
+    __asm__ __volatile__ (
+        "RDTSCP\n\t"  /* Citaj TSC */
+        "mov %%edx, %0\n\t"
+        "mov %%eax, %1\n\t"
+        "CPUID\n\t"   /* Sprijeci premjestanje kasnijeg koda */
+        : "=r"(hi), "=r"(lo)
+        :: "%rax", "%rbx", "%rcx", "%rdx"
+    );
+    return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
+\end{lstlisting}
+
+Instrukcija \texttt{CPUID} djeluje kao barijera kojom se garantuje potpuno povlačenje (\textit{retirement}) svih prethodnih instrukcija iz \textit{out-of-order} izvršnog stroja \cite{intel_bench}. \texttt{RDTSCP} analogno osigurava da sve mjerene instrukcije dostignu fazu povlačenja prije nego što se vrijednost TSC-a uzorkuje. \texttt{CPUID} koji slijedi iza \texttt{RDTSCP} sprječava spekulativno izvlačenje narednih instrukcija u mjerni prozor.
+
+\subsection{Ograničenja kompajlera}
+
+Da bi se spriječilo da kompajler premjesti instrukcije unutar prozora u kojem mjerimo vrijeme ili ukloni računanje, koriste se sljedeće direktive:
+
+\begin{lstlisting}[language=C, caption={Barijere kompajlera za zaštitu mjernog prozora}]
+/* Sprijeci premjestanje instrukcija od strane kompajlera */
+#define COMPILER_BARRIER() 
+   __asm__ __volatile__ ("" ::: "memory")
+
+/* Sprijeci eliminaciju rezultata */
+#define DO_NOT_OPTIMIZE(x) \
+    __asm__ __volatile__ ("" : : "r,m"(x) : "memory")
+\end{lstlisting}
+
+\section{Implementacija RSA modularne eksponencijacije}
+
+\subsection{Modularna multiplikacija}
+
+Za izračunavanje $a \cdot b \bmod m$ gdje su $a, b < 2^{61}$ (modulus je $2^{61}-1$), produkt $a \cdot b$ može biti do $2^{122}$, što se ne može pohraniti u 64-bitni tip. Zbog toga se koristi GCC ekstenzija \texttt{\_\_uint128\_t}:
+\newpage
+\begin{lstlisting}[language=C, caption={Modularna multiplikacija bez prekoračenja (\textit{overflow})}]
+static inline uint64_t mulmod(uint64_t a, uint64_t b, uint64_t m) {
+    return (uint64_t)(
+        ((__uint128_t)a * (__uint128_t)b) % (__uint128_t)m
+    );
+}
+\end{lstlisting}
+
+\noindent GCC prevodi ovo u jednu \texttt{MULQ} instrukciju (64-bitno množenje koje daje 128-bitni rezultat u RDX:RAX) \cite{intel_sdm}, a zatim \texttt{DIVQ} za modulo.
+
+\subsection{Ranjiva implementacija}
+\label{sec:vuln_impl}
+
+Ranjiva implementacija koristi eksplicitno grananje po bitu eksponenta:
+
+\begin{lstlisting}[language=C, caption={Ranjiva square-and-multiply implementacija}, label=lst:vulnerable]
+__attribute__((noinline))
+__attribute__((optimize("O0")))
+uint64_t mod_exp_vulnerable(
+        uint64_t base, uint64_t exp,
+        uint64_t mod, int num_bits) {
+    uint64_t result = 1ULL;
+    base = base % mod;
+    for (int i = num_bits - 1; i >= 0; i--) {
+        result = mulmod(result, result, mod); 
+        if ((exp >> i) & 1) {
+            result = mulmod(result, base, mod);
+        }
+    }
+    return result;
+}
+\end{lstlisting}
+
+Atribut \texttt{optimize("O0")} korišten je kao mjera opreza da se osigura izvršavanje grananja. Eksperiment 5 (sekcija \ref{sec:compiler_exp}) naknadno potvrđuje da GCC ne generiše \texttt{CMOV} ni za jedan nivo optimizacije za ovaj specifičan kod, pa je atribut u ovom slučaju redundantan, ali je zadržan kao dobra praksa jer ponašanje kompajlera nije garantovano između verzija i platformi. \textit{Sigurnost implementacije ne smije zavisiti od ponašanja kompajlera.}
+
+\subsection{Constant-time implementacija}
+\label{sec:ct_impl}
+
+Constant-time implementacija eliminiše grananje kroz bitovnu aritmetiku:
+
+\begin{lstlisting}[language=C, caption={Constant-time selekcija bez grananja}]
+static inline uint64_t ct_select(
+        uint64_t cond, uint64_t a, uint64_t b) {
+    uint64_t mask = -(uint64_t)(cond & 1);
+    return (a & mask) | (b & ~mask);
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=C, caption={Constant-time square-and-multiply}, label=lst:ct]
+uint64_t mod_exp_constant_time(
+        uint64_t base, uint64_t exp,
+        uint64_t mod, int num_bits) {
+    uint64_t result = 1ULL;
+    base = base % mod;
+    for (int i = num_bits - 1; i >= 0; i--) {
+        uint64_t bit = (exp >> i) & 1;
+        result = mulmod(result, result, mod);  
+        uint64_t mul = mulmod(result, base, mod); 
+        result = ct_select(bit, mul, result);
+    }
+    return result;
+}
+\end{lstlisting}
+
+Ključna razlika: množenje \texttt{mulmod(result, base, mod)} \textit{uvijek se izvršava}, bez obzira na vrijednost bita; \texttt{ct\_select()} zatim bira koji rezultat koristiti, ali budući da ne sadrži ni jedan skok, CPU ne može razlikovati slučaj bit=0 od slučaja bit=1 po trajanju.
+
+Ispravnost implementacije verifikovana je pregledom generisanog asemblerskog koda koristeći \texttt{objdump -d} (vidjeti Prilog \ref{app:asm_output}). Pregled asemblerskog koda \texttt{ct\_select} funkcije potvrđuje da GCC generiše isključivo bitovne operacije bez skokova: \texttt{and}, \texttt{neg}, \texttt{not}, \texttt{or} instrukcije i nema nijedne uslovne instrukcije skoka (\texttt{je}/\texttt{jne}). Petlja u \texttt{mod\_exp\_constant\_time} sadrži samo jedan skok koji kontroliše broj iteracija ($i \geq 0$), a ne vrijednost tajnog bita. Eksperiment 1 potvrđuje ovu analizu: razlika sredina od $+0{,}14$ ciklusa i $p = 0{,}84$ konzistentni su s hipotezom o odsustvu vremenskog curenja.
+
+\section{Dizajn eksperimenta prikupljanja podataka}
+\label{sec:exp_design}
+
+\subsection{Dizajn uparenih mjerenja}
+
+Ključna metodološka odluka u dizajnu eksperimenta je korištenje uparenog dizajna (\textit{paired design}). Umjesto da se nasumično biraju eksponenti i klasifikuju po vrijednosti ciljanog bita, za svaku iteraciju generišu se \textit{parovi} eksponenata:
+
+\begin{enumerate}
+\item Generiše se nasumičan 64-bitni bazni eksponent \texttt{base\_exp}.
+\item $\texttt{exp}_0 = \texttt{base\_exp}$ s bitom $i$ postavljenim na 0.
+\item $\texttt{exp}_1 = \texttt{base\_exp}$ s bitom $i$ postavljenim na 1.
+\end{enumerate}
+
+Budući da su $\texttt{exp}_0$ i $\texttt{exp}_1$ identični na svim bitovima osim na ciljanom bitu $i$, jedina razlika u trajanju \textit{može biti samo} zbog bita $i$. Ovaj dizajn eliminiše faktor koji bi nastao da grupe imaju različite Hammingove težine (tj. različit ukupan broj jedinica), jer bi tada ukupno trajanje eksponencijacije variralo iz razloga koji nemaju veze s ciljanim bitom.
+
+\subsection{Nasumičan redoslijed}
+
+Redoslijed mjerenja $\texttt{exp}_0$ i $\texttt{exp}_1$ unutar svakog para se bira nasumično (50\% vjerovatnoća zamjene) kako bi eliminisao pristranost nastalu od:
+\begin{itemize}
+\item Cache efekta (prvi poziv uvijek sporiji),
+\item Predviđanja grananja (CPU može biti brži za već viđene odluke).
+\end{itemize}
+
+\subsection{Filtriranje rubnih vrijednosti}
+
+Mjerenja koja padaju izvan definisanog opsega se odbacuju:
+\begin{itemize}
+\item \textbf{Donja granica} (\texttt{MIN\_CYCLES} = 500): Mjerenja kraća od 500 ciklusa fizički su nemoguća za 64-bitnu mod\_exp operaciju i nagovještavaju grešku u mjerenju.
+\item \textbf{Gornja granica} (\texttt{OUTLIER\_THRESHOLD} = 50000): Mjerenja duža od 50 hiljada ciklusa ukazuju na prekid konteksta (\textit{context switch}) tokom mjerenja.
+\end{itemize}
+
+\subsection{Parametri eksperimenta}
+
+\begin{table}[H]
+\centering
+\caption{Parametri eksperimenta}
+\label{tab:params}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parametar} & \textbf{Vrijednost} \\
+\midrule
+Modulus $n$ & $2^{61} - 1 = 2\,305\,843\,009\,213\,693\,951$ (Mersenne prost) \\
+Baza $M$ & $1\,234\,567\,890\,123\,456\,789$ \\
+Broj bita eksponenta & 64 \\
+Ciljani bit u Eksperimentu 1 & 16 \\
+Broj parova mjerenja & 500\,000 po implementaciji \\
+Iteracije zagrijavanja & 10\,000 \\
+PRNG seed & \texttt{0xABCDEF1234567890} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Mersenne prost broj $2^{61}-1$ odabran je jer omogućava reprezentaciju modulusa u jednom 64-bitnom registru, čime se izbjegava potreba za višestrukom preciznošću i izoluje isključivo vremenski efekat uslovnog grananja. Uz to, ovaj broj je dokazano prost i osigurava validan modulus za RSA operacije. Korištenje 64-bitnog eksponenta (umjesto realnog 2048-bitnog) smanjuje trajanje eksperimenta dok zadržava identičan mehanizam curenja informacija: svaki bit se napada nezavisno, pa se napad praktično linearno skalira s brojem bita. PRNG seed je fiksiran radi reproducibilnosti; kod prihvata seed kao argument (\texttt{--seed}), a u svim prikazanim eksperimentima korištena je vrijednost \texttt{0xABCDEF1234567890}.
+
+\section{Implementacija Flush+Reload napada}
+\label{sec:fr_impl}
+
+Za razliku od prethodnih eksperimenata koji mjere ukupno trajanje RSA operacije unutar jednog procesa, Flush+Reload napad koristi \textit{dva odvojena procesa}, žrtvu i napadača, koji nikada ne komuniciraju direktno. Jedino što ih povezuje je dijeljeni LLC cache, koji nastaje jer operativni sistem mapira istu dijeljenu biblioteku (\texttt{.so}) u oba procesa kroz iste fizičke memorijske stranice (sekcija \ref{sec:cache_attacks}).
+
+Implementacija je kontrolisani dokaz koncepta koji namjerno izoluje ciljanu funkciju radi jasne demonstracije mehanizma. Međutim, identičan obrazac , uslovno množenje u zasebnoj funkciji, postojao je u stvarnim bibliotekama: GnuPG/libgcrypt je koristio zasebnu \texttt{\_gcry\_mpi\_mul()} funkciju za korak množenja, što su Yarom i Falkner \cite{yarom2014} iskoristili u originalnom Flush+Reload napadu. Starije verzije OpenSSL-a su imale sličnu separaciju između \texttt{bn\_sqr} i \texttt{bn\_mul\_mont}.
+
+\subsection{Dijeljeni RSA kod}
+
+RSA implementacija smještena je u dijeljenu biblioteku \texttt{librsa\_shared.so}. Ključna dizajnerska odluka je izolovanje uslovnog množenja (koraka koji se izvršava samo za bit=1) u zasebnu funkciju:
+
+\begin{lstlisting}[language=C, caption={Ciljana funkcija za Flush+Reload napad}, label=lst:fr_target]
+uint64_t __attribute__((noinline, aligned(64)))
+rsa_multiply_step(uint64_t result, uint64_t base,
+                  uint64_t mod) {
+    return mulmod(result, base, mod);
+}
+\end{lstlisting}
+
+Dva atributa su neophodna za ispravnost napada:
+\begin{itemize}
+\item \texttt{noinline} sprječava kompajler da ugradi tijelo funkcije u pozivajući kod, čime bi nestala zasebna adresa koju napadač može pratiti.
+\item \texttt{aligned(64)} poravnava funkciju na granicu cache linije da ne bi \texttt{rsa\_multiply\_step()} mogla dijeliti cache liniju s okolnim kodom, pa bi \texttt{clflush} te linije izbacivao i uzrokovao lažne cache pogotke.
+\end{itemize}
+
+Funkcija \texttt{rsa\_decrypt\_shared()} poziva \texttt{rsa\_multiply\_step()} samo kad je bit eksponenta $= 1$:
+
+\begin{lstlisting}[language=C, caption={Uslovno pozivanje ciljane funkcije}, label=lst:fr_branch]
+for (int i = EXP_BITS - 1; i >= 0; i--) {
+    result = mulmod(result, result, mod);
+    if ((exp >> i) & 1)
+        result = rsa_multiply_step(result, base, mod);
+}
+\end{lstlisting}
+
+Ovo uslovno pozivanje je upravo ono što napadač iskorištava: kad je bit $= 1$, žrtva pristupa cache liniji funkcije \texttt{rsa\_multiply\_step()} i ostavlja trag u LLC-u; kad je bit $= 0$, ta cache linija ostaje netaknuta.
+
+\subsection{Žrtva i napadač}
+
+\paragraph{Žrtva (\texttt{victim\_fr}).}
+Simulira RSA server koji u petlji dekriptuje poruke tajnim ključem \texttt{0xDEADBEEFCAFEBABE}, pozivajući \texttt{rsa\_decrypt\_shared()} iz dijeljene biblioteke. Između dekriptovanja pauzira 50\,$\mu$s da stvori jasne granice između operacija. Žrtva se fiksira na CPU 2, koji prema topologiji jezgri pripada drugom fizičkom P-jezgru, izolovanom od CPU 0 koji koristi napadač. Ova izolacija je ključna: ako bi žrtva i napadač dijelili isto fizički jezgro (npr.\ CPU 0 i CPU 1 kao hiperniti), zajednički predviđač grananja bi naučio obrazac ključa i spekulativno izvršavao \texttt{rsa\_multiply\_step()} čak i za bit=0, uzrokujući lažne cache pogotke.
+
+\paragraph{Napadač (\texttt{attacker\_fr}).}
+Nema nikakav pristup memoriji žrtve niti zna tajni ključ. Jedino što posjeduje je adresa funkcije \texttt{rsa\_multiply\_step()} u dijeljenom \texttt{.so} fajlu. Napadač izvodi 100\,000 Flush$\to$Čekanje$\to$Reload ciklusa i klasificira svaku reload latenciju:
+\begin{itemize}
+\item \textbf{Kratka latencija ($\approx 340$ ciklusa):} Žrtva je u međuvremenu pozvala funkciju i učitala je u cache $\Rightarrow$ bit $= 1$.
+\item \textbf{Duga latencija ($\approx 681$ ciklusa):} Funkcija je ostala u DRAM-u $\Rightarrow$ bit $= 0$ (ili žrtva nije bila aktivna).
+\end{itemize}
+
+	
+Kritičan implementacijski detalj je pribavljanje adrese ciljane funkcije. Uzimanje adrese operatorom \texttt{\&} u C-u (npr.\ \texttt{\&rsa\_multiply\_step}) daje adresu PLT (\textit{Procedure Linkage Table}) stuba u napadačevom binarnom fajlu, a ne stvarnu adresu u \texttt{.so}. Budući da žrtva poziva stvarnu adresu, \texttt{clflush} na PLT stubu ne bi uklonio cache liniju koju žrtva koristi, i napad ne bi radio. Ispravno rješenje je \texttt{dlsym()} koji vraća stvarnu adresu u dijeljenom objektu:
+
+\begin{lstlisting}[language=C, caption={Pribavljanje stvarne adrese ciljane funkcije}, label=lst:fr_dlsym]
+void *handle = dlopen("./librsa_shared.so",
+                      RTLD_NOLOAD | RTLD_NOW);
+void *target = dlsym(handle, "rsa_multiply_step");
+\end{lstlisting}
+
+\subsection{Kalibracija praga}
+
+Da bi napadač razlikovao cache hit od cache miss-a, potreban je prag latencije. Ovaj prag se određuje eksperimentalno pri pokretanju programa:
+\begin{enumerate}
+\item Mjeri se latencija pristupa nedavno korištenoj adresi (cache hit referenca): $\approx 340$ ciklusa.
+\item Mjeri se latencija pristupa adresi koja je namjerno izbačena iz cache-a (cache miss referenca): $\approx 681$ ciklusa.
+\item Prag se postavlja na sredinu: $(340 + 681) / 2 \approx 511$ ciklusa.
+\end{enumerate}
+
+\section{Napad rekonstrukcije ključa}
+\label{sec:key_recon}
+
+\subsection{Struktura napada i model slijepe rekonstrukcije}
+
+Napad je implementiran kao slijepa rekonstrukcija u kojoj napadački kod nikada ne vidi vrijednost tajnog ključa $S$. Tajni ključ pohranjen je isključivo unutar zasebnog modula kao \texttt{static} varijabla, nevidljiva ostatku napadačkog koda. Jedini načini interakcije s tim modulom su:
+
+$\texttt{oracle\_secret\_time}(M)$ koji vraća trajanje eksponencijacije s tajnim ključem za odabranu bazu $M$.
+
+$\texttt{oracle\_perturbed\_time}(M, i)$ koji vraća trajanje eksponencijacije s istim ključem, ali s obrnutim bitom na poziciji $i$. Tu izmjenu modul primjenjuje interno, bez da otkriva vrijednost $S$.
+
+$\texttt{oracle\_reveal\_secret}()$ koji otkriva $S$ jedino za provjeru ispravnosti i poziva se tek nakon završene rekonstrukcije svih bita.
+
+Ovaj model odgovara Kocher-ovom scenariju \cite{kocher1996}: napadač šalje odabrane ulaze serveru koji rukuje tajnim ključem i mjeri trajanje odgovora, ali nikada ne dobiva direktan pristup ključu.
+
+\subsection{Princip bit-po-bit napada}
+
+Za svaki bit $i$ od najznačajnijeg ka najmanje značajnom, napad radi sljedeće:
+
+\begin{enumerate}
+\item Izmjeri prosječno trajanje eksponencijacije s tajnim ključem: $\bar{T}_S$.
+\item Izmjeri prosječno trajanje eksponencijacije s istim ključem, ali s obrnutim bitom na poziciji $i$: $\bar{T}_{S'}$.
+\item Računa razliku $\Delta_i = \bar{T}_S - \bar{T}_{S'}$.
+\item Ako je $\Delta_i > 0$: originalni ključ traje duže, što znači da je bit $i$ uzrokovao dodatno množenje, pa je $S[i] = 1$.
+\item Ako je $\Delta_i < 0$: ključ s obrnutim bitom traje duže, pa je $S[i] = 0$.
+\end{enumerate}
+
+U praksi, implementacija umjesto prostih prosječnih vrijednosti koristi uparenu t-statistiku opisanu u nastavku, koja je otpornija na šum.
+
+\subsection{Tehnike robustnosti}
+
+Napad implementira pet tehnika za robustnost:
+
+\paragraph{Uparena mjerenja i statistika razlika.}
+Za svaki par mjerenja koristi se ista baza $M$, čime se eliminišu varijacije koje potiču od trenutnog stanja cache memorije. Umjesto poređenja prosječnih vrijednosti $\bar{T}_S$ i $\bar{T}_{S'}$, za svaki par $k$ računa se razlika $\delta_k = T_S^{(k)} - T_{S'}^{(k)}$, a potom t-statistika:
+\[
+t_i = \frac{\bar{\delta}}{\hat{\sigma}_\delta / \sqrt{K}}
+\]
+Bit se klasificira prema predznaku $t_i$, a veličina $|t_i|$ mjeri pouzdanost te odluke.
+
+\paragraph{Ponavljanje mjerenja za nesigurne bite.}
+Ako je $|t_i| < 2{,}5$ (što odgovara pouzdanosti manjoj od 99\%) nakon prvog prolaza s $K$ parova, automatski se provodi drugi prolaz s $2K$ parova samo za taj bit. Jasni biti se ne mjere ponovo i napad troši dodatno vrijeme isključivo tamo gdje je signal nejasan.
+
+\paragraph{Neutralizacija predviđača grananja.}
+Između svakog para mjerenja izvode se tri modularne eksponencijacije s nasumičnim eksponentima. Svrha je vraćanje CPU predviđača grananja u neutralno stanje: bez ovog koraka, predviđač bi upamtio obrazac prethodnog eksponenta i sistematski ubrzavao prvo mjerenje sljedećeg para, unoseći pristranost u rezultate.
+
+\paragraph{Odbacivanje anomalnih parova.}
+Odbacuju se parovi u kojima je apsolutna razlika $|T_S - T_{S'}|$ veća od 1\,000 ciklusa. Stvarna timing razlika iznosi svega $\approx 75$ ciklusa, pa veća razlika ukazuje na to da je prekid konteksta pogodio jedno od dva mjerenja u paru, a ne na stvarnu razliku između eksponenata.
+
+\paragraph{Skraćena sredina.}
+Za prikaz i upis rezultata koristi se skraćena sredina koja odbacuje gornji i donji 5\% uzoraka \cite{wilcox2005}, čime se smanjuje utjecaj preostalih rubnih vrijednosti na prikazane brojke. Sama odluka o vrijednosti bita temelji se na t-statistici računatoj iz cijelog skupa parova.
+
+Implementacija i eksperimentalni dizajn opisani u ovom poglavlju čine osnovu za analizu rezultata koja slijedi u narednom poglavlju.

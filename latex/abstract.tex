@@ -1,0 +1,19 @@
+\pagebreak
+
+\section*{Sažetak}
+
+U radu se eksperimentalno analiziraju timing i cache side-channel napadi na RSA kriptosistem. Fokus je na statističkoj detekciji i iskorištavanju vremenskih razlika uzrokovanih uslovnim grananjem u square-and-multiply algoritmu, te na Flush+Reload napadu koji iskorištava dijeljeni LLC (\textit{Last Level Cache}). Provedeno je sedam eksperimenata na modernom procesoru (Intel i5-1335U): detekcija timing leaka, averaging napad, potpuna rekonstrukcija 64-bitnog privatnog ključa, sistematska multi-bit analiza, evaluacija utjecaja kompajlerskih optimizacija, analiza RSA blindinga kao kontramjere, te Flush+Reload cache napad.
+
+Rezultati pokazuju da naivna implementacija ima mjerljiv timing leak od $\approx 76$ CPU ciklusa po bitu ($p < 10^{-50}$, Cohen-ov $d = 0{,}134$), koji omogućava potpunu slijepu rekonstrukciju ključa sa 100\% tačnošću uz 5000 mjerenja po bitu (teorijski dovoljno i $K \approx 2000$ za 100\% tačnost po bitu). Constant-time implementacija potpuno eliminiše leak ($p = 0{,}84$, $d \approx 0$). Kompajlerske optimizacije (O0--O3) ne eliminišu ranjivost, a RSA blinding ne štiti od branch-zavisnih leaka. Flush+Reload napad potvrđuje bimodalnu distribuciju reload latencija s razlikom od $\approx 342$ ciklusa između cache hit i cache miss, što omogućava klasifikaciju bita iz jednog mjerenja.
+
+\bigskip
+\textbf{Ključne riječi}: RSA, timing side-channel napad, Flush+Reload, square-and-multiply, constant-time, statistička analiza, rekonstrukcija ključa, RSA blinding
+
+\section*{Abstract}
+
+This thesis experimentally analyzes timing and cache side-channel attacks on the RSA cryptosystem, focusing on statistical detection and exploitation of timing differences caused by conditional branching in the square-and-multiply algorithm, as well as the Flush+Reload attack exploiting the shared Last Level Cache (LLC). Seven experiments were conducted on a modern processor (Intel i5-1335U): timing leak detection, averaging attack, full 64-bit private key reconstruction, systematic multi-bit analysis, compiler optimization impact evaluation, RSA blinding countermeasure analysis, and Flush+Reload cache attack.
+
+Results demonstrate that the naive implementation exhibits a measurable timing leak of $\approx 76$ CPU cycles per bit ($p < 10^{-50}$, Cohen's $d = 0.134$), enabling complete blind key reconstruction with 100\% accuracy using 5000 measurements per bit (with $K \approx 2000$ theoretically sufficient for 100\% per-bit accuracy). The constant-time implementation fully eliminates the leak ($p = 0.84$, $d \approx 0$). Compiler optimizations (O0--O3) do not eliminate the vulnerability, and RSA blinding does not protect against branch-dependent leaks. The Flush+Reload attack confirms a bimodal reload latency distribution with $\approx 342$ cycle separation between cache hit and miss, enabling single-measurement bit classification.
+
+\bigskip
+\textbf{Keywords}: RSA, timing side-channel attack, Flush+Reload, square-and-multiply, constant-time, statistical analysis, key reconstruction, RSA blinding

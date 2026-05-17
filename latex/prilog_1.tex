@@ -1,0 +1,99 @@
+\chapter{Konfiguracija hardverskog okruženja}
+\label{app:hw_config}
+
+Ovaj prilog dokumentuje detaljne korake konfiguracije hardverskog okruženja primijenjene prije pokretanja eksperimenata. Ove mjere osiguravaju reproducibilnost i minimizaciju sistematskog šuma.
+
+\section{Isključivanje Turbo Boost-a}
+
+Intel Turbo Boost dinamički podiže frekvenciju procesora (do 4{,}6 GHz na i5-1335U) ovisno o termičkom stanju. Budući da TSC raste po konstantnoj stopi (nominalnoj frekvenciji), aktivan Turbo znači da isti broj TSC ciklusa odgovara različitoj količini stvarnog rada. Isključivanje:
+
+\begin{lstlisting}[language=bash, caption={Isključivanje Intel Turbo Boost-a}]
+echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+\end{lstlisting}
+
+\section{Performance CPU governor}
+
+Podrazumijevani \texttt{powersave} governor (korišten s \texttt{intel\_pstate} driverom na ovoj platformi) dinamički prilagođava frekvenciju, što bi uzrokovalo da početne iteracije rade na nižoj frekvenciji:
+
+\begin{lstlisting}[language=bash, caption={Postavljanje performance governor-a}]
+sudo cpupower frequency-set -g performance
+\end{lstlisting}
+
+\section{CPU pinning}
+
+Intel i5-1335U ima P-core (Raptor Cove, out-of-order, 3{,}4 GHz baza) i E-core (Gracemont, out-of-order, 2{,}5 GHz) jezgre s različitim latencijama. Bez eksplicitnog odabira, Linux scheduler može migrirati procese između jezgri:
+
+\begin{lstlisting}[language=bash, caption={Pokretanje eksperimenta s fiksiranjem na P-core 0}]
+taskset -c 0 ./experiment
+\end{lstlisting}
+
+Dodatno, eksperimentalni program programski poziva \texttt{sched\_setaffinity()} kao drugi nivo osiguranja.
+
+\section{Zagrijavanje cache-a}
+
+Prvih 10\,000 iteracija eksperimenta je faza zagrijavanja čija se mjerenja odbacuju. Svrha:
+\begin{itemize}
+\item Populacija L1/L2 cache memorije relevantnim kodom i podacima
+\item Stabilizacija branch prediktora
+\item Termalna stabilizacija procesora (eliminacija thermal throttling-a)
+\end{itemize}
+
+\section{Verifikacija TSC frekvencije}
+
+Program mjeri TSC frekvenciju poređenjem TSC-a i \texttt{CLOCK\_MONOTONIC} sata tokom 100 ms intervala. Izmjereno: $\approx 2{,}101$ GHz (odgovara nominalnoj frekvenciji).
+
+\section{Provjera assembly izlaza}
+
+Za verifikaciju da kompajler ne generiše \texttt{CMOV} instrukcije:
+
+\begin{lstlisting}[language=bash, caption={Provjera assembly koda za branch instrukcije}]
+make check-asm-all
+# Ocekivani izlaz: jne/je (branch), nikad cmov
+\end{lstlisting}
+
+\section{Assembly izlaz: implementacija sa grananjem i bez grananja}
+\label{app:asm_output}
+
+Za verifikaciju da je timing ranjivost prisutna na nivou mašinskog koda, ispod su prikazani ključni dijelovi assembly izlaza dobijenog naredbom \texttt{objdump~-d}. Korišten je GCC~13.3 na Ubuntu~24.04.
+
+\subsection{Ranjiva implementacija (eksplicitni branch)}
+
+Isječak koda \ref{lst:asm_vuln} prikazuje kritični uslovni skok u funkciji \texttt{mod\_exp\_vulnerable}. Instrukcija \texttt{je} (jump if equal / jump if zero) preskače blok množenja kada je bit eksponenta 0, čime nastaje mjerljiva timing razlika.
+
+\begin{lstlisting}[caption={Ključni uslovni skok (\textit{branch}) u \texttt{mod\_exp\_vulnerable} -- stvarni \texttt{objdump} izlaz (GCC 13.3, \texttt{-O0}, Intel sintaksa)}, label=lst:asm_vuln, basicstyle=\ttfamily\small, numbers=none]
+; Testiranje bita eksponenta: if ((exp >> i) & 1)
+208b:    mov    eax,DWORD PTR [rbp-0xc]      ; ucitaj i (loop counter)
+208e:    mov    rdx,QWORD PTR [rbp-0x20]     ; ucitaj exp
+2092:    shrx   rax,rdx,rax                  ; rax = exp >> i
+2097:    and    eax,0x1                      ; rax = (exp >> i) & 1
+209a:    test   rax,rax
+209d:    je     20ba <mod_exp_vulnerable+0x89>  ; USLOVNI SKOK: preskok za bit=0
+; --- blok mnozenja: izvrsava se SAMO za bit=1 ---
+209f:    mov    rdx,QWORD PTR [rbp-0x28]     ; ucitaj mod
+20a3:    mov    rcx,QWORD PTR [rbp-0x18]     ; ucitaj base
+20a7:    mov    rax,QWORD PTR [rbp-0x8]      ; ucitaj result
+20ab:    mov    rsi,rcx
+20ae:    mov    rdi,rax
+20b1:    call   1f8d <mulmod>                ; poziv mulmod(result, base, mod)
+20b6:    mov    QWORD PTR [rbp-0x8],rax      ; pohrani result
+; --- obje grane spajaju se ovdje ---
+20ba:    sub    DWORD PTR [rbp-0xc],0x1      ; i--
+\end{lstlisting}
+
+\subsection{Konstantna vremenska implementacija (branchless)}
+
+Za usporedbu, isječak koda \ref{lst:asm_ct} prikazuje \texttt{ct\_select()} selekciju u konstantnoj vremenskoj implementaciji. Umjesto uslovnog skoka, koriste se isključivo aritmetičke i logičke instrukcije koje se izvršavaju u konstantnom vremenu bez obzira na vrijednost bita.
+
+\begin{lstlisting}[caption={Selekcija bez grananja (\textit{branchless}) u \texttt{mod\_exp\_constant\_time}}, label=lst:asm_ct, basicstyle=\ttfamily\small, numbers=none]
+  ; ct_select(bit, mul_result, result) -- bez grananja
+  movq   %rdi, %rax          ; load bit
+  andl   $0x1, %eax          ; bit & 1
+  negq   %rax                ; mask = -(bit & 1)
+  movq   %rax, %rcx          ; rcx = mask
+  andq   %rsi, %rcx          ; mul_result & mask
+  notq   %rax                ; ~mask
+  andq   %rdx, %rax          ; result & ~mask
+  orq    %rcx, %rax          ; combine: finalni rezultat
+\end{lstlisting}
+
+\noindent CPU izvršava identičnu sekvencu instrukcija bez obzira na vrijednost bita i nema uslovnih skokova, nema branch predikcije, nema timing razlike.

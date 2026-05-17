@@ -1,0 +1,397 @@
+% poglavlje_2.tex — Teorijske osnove
+
+\chapter{Teorijske osnove}
+\label{ch:teorija}
+
+\section{RSA kriptosistem}
+
+RSA kriptosistem, koji su 1978. godine predložili Rivest, Shamir i Adleman \cite{rivest1978}, je prvi javno objavljeni praktično primjenjeni sistem enkripcije s javnim ključem.\footnote{Diffie i Hellman su 1976. predložili teorijski okvir za razmjenu ključeva javnim kanalom, ali nisu specificirali konkretan sistem enkripcije. Clifford Cocks iz britanskog GCHQ-a razvio je ekvivalent RSA-a 1973, ali je to ostalo klasificirano do 1997. \cite{cocks1973}} Temelji se na asimetričnom paru ključeva: javnom ključu koji se slobodno distribuira i privatnom ključu koji ostaje tajan.
+
+\subsection{Generisanje ključeva}
+
+Generisanje RSA ključeva odvija se u sljedećim koracima:
+
+\begin{enumerate}
+\item Odaberu se dva velika prosta broja $p$ i $q$, pri čemu je $p \neq q$.
+\item Računa se \textit{modulus} $n = p \cdot q$.
+\item Računa se Eulerova phi-funkcija (funkcija totijenta): $\varphi(n) = (p-1)(q-1)$.
+\item Bira se javni eksponent $e$ takav da je $1 < e < \varphi(n)$ i $\gcd(e, \varphi(n)) = 1$.
+\item Privatni eksponent $d$ je modularni inverz od $e$ po modulu $\varphi(n)$:
+\begin{equation}
+d \cdot e \equiv 1 \pmod{\varphi(n)}
+\label{eq:privatekey}
+\end{equation}
+\end{enumerate}
+
+Javni ključ je par $(e, n)$, a privatni ključ je $d$ (zajedno s $n$).
+
+\subsection{Šifriranje i dešifriranje}
+
+Za poruku $M$ ($0 \leq M < n$), šifriranje se vrši eksponenciranjem s javnim ključem:
+\begin{equation}
+C = M^e \bmod n
+\label{eq:encrypt}
+\end{equation}
+
+Dešifriranje se vrši eksponenciranjem šifrirane poruke $C$ s privatnim ključem:
+\begin{equation}
+M = C^d \bmod n
+\label{eq:decrypt}
+\end{equation}
+
+Ispravnost dešifriranja garantuje Eulerova teorema: $M^{e \cdot d} \equiv M^{k\varphi(n)+1} \equiv M \pmod{n}$ \cite{rivest1978}.
+
+\subsection{Sigurnost RSA-a}
+
+Sigurnost RSA-a se zasniva na pretpostavci da je faktorizacija produkta dva velika prosta broja $n = p \cdot q$ praktično neizvodljiva. Poznati najbrži algoritam faktorizacije za klasične računare (General Number Field Sieve) ima subeksponencijalnu složenost $O(\exp(c(\ln n)^{1/3}(\ln \ln n)^{2/3}))$ \cite{lenstra1993}. Za modulus od 2048 bita koji se danas preporučuje, ovo je računski nedostižno s poznatim klasičnim računarskim resursima.\footnote{Shorov kvantni algoritam može faktorizovati RSA modulus u polinomijalnom vremenu \cite{shor1994}, što je pokrenulo razvoj post-kvantnih kriptografskih standarda. NIST je 2024. finalizirao prve post-kvantne standarde (FIPS 203, 204, 205) \cite{nist_pqc2024}. Analiza u ovom radu ograničena je na klasično okruženje.}
+
+Međutim, sigurnost algoritma ne implicira automatski sigurnost implementacije, i upravo tu nastaju side-channel ranjivosti koje su tema ovog rada.
+
+\section{Modularna eksponencijacija}
+
+Glavna operacija u RSA kriptosistemu je \textit{modularna eksponencijacija}: izračunavanje $M^d \bmod n$ za veliko $d$. Direktno uzastopno množenje $M$ sa samim sobom $d$ puta je računski neprihvatljivo: za $d \approx 2^{2048}$, to bi zahtijevalo $2^{2048}$ množenja. Umjesto toga, koristi se algoritam kvadriraj-i-množi, koji svodi kompleksnost na $O(\log_2 d)$ množenja.
+
+\subsection{Kvadriraj-i-množi algoritam}
+
+Neka su $d_{k-1}, d_{k-2}, \ldots, d_1, d_0$ biti privatnog eksponenta $d$ od MSB (najznačajnijeg) ka LSB (najmanje značajnom). Algoritam od lijeva do desno kvadriraj-i-množi \cite{menezes1996} je sljedeći:
+
+\begin{lstlisting}[language=C, caption={Kvadriraj-i-množi algoritam (pseudokod)}, label=lst:sqm]
+result = 1
+za i od k-1 do 0:
+    result = result * result mod n 
+    ako je d[i] == 1:
+        result = result * M mod n   
+vrati result
+\end{lstlisting}
+
+\noindent Algoritam radi $k$ kvadriranja i tačno $w$ množenja, gdje je $w$ Hammingova težina eksponenta $d$ (broj jediničnih bita). Za nasumičan 2048-bitni eksponent (koji je preporučen za korištenje u produkcijskim sistemima), očekivana vrijednost $w$ je 1024, pa algoritam tipično izvodi oko 3072 modularne multiplikacije. Dijagram toka algoritma prikazan je na slici \ref{fig:sqm_flow}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.1cm,
+    startstop/.style={rectangle, rounded corners, draw, minimum width=3cm, minimum height=0.7cm, text centered, font=\small},
+    process/.style={rectangle, draw, minimum width=3.8cm, minimum height=0.7cm, text centered, font=\small},
+    decision/.style={diamond, draw, aspect=2.5, text centered, font=\small, inner sep=1pt},
+    leak/.style={rectangle, draw, minimum width=3.8cm, minimum height=0.7cm, text centered, font=\small, fill=gray!20, line width=1.2pt},
+    arr/.style={->, >=stealth, thick}
+]
+
+\node[startstop] (init) {$\mathit{result} \leftarrow 1$,\; $i \leftarrow k{-}1$};
+\node[decision, below=of init] (loop) {$i \geq 0$\,?};
+\node[process, below=of loop] (sq) {$\mathit{result} \leftarrow \mathit{result}^2 \bmod n$};
+\node[decision, below=of sq] (bit) {$d_i = 1$\,?};
+\node[leak, right=2.5cm of bit] (mul) {$\mathit{result} \leftarrow \mathit{result} \cdot M \bmod n$};
+\node[process, below=1.2cm of bit] (dec) {$i \leftarrow i - 1$};
+\node[startstop, right=2.5cm of loop] (end) {Vrati $\mathit{result}$};
+
+\draw[arr] (init) -- (loop);
+\draw[arr] (loop) -- node[right, font=\small] {da} (sq);
+\draw[arr] (loop) -- node[above, font=\small] {ne} (end);
+\draw[arr] (sq) -- (bit);
+\draw[arr] (bit) -- node[above, font=\small] {da} (mul);
+\draw[arr] (bit) -- node[left, font=\small] {ne} (dec);
+\draw[arr] (mul) |- (dec);
+\draw[arr] (dec.west) -- ++(-1.8,0) |- (loop.west);
+
+\node[right=0.2cm of mul, font=\scriptsize, text width=2.5cm, align=left] {\textit{Timing razlika:}\\samo za $d_i = 1$};
+
+\end{tikzpicture}
+\caption{Dijagram toka kvadriraj-i-množi algoritma. .}
+\label{fig:sqm_flow}
+\end{figure}
+
+\subsubsection{Primjer}
+
+Za $d = 11$ (binarno: $1011$) i $M = 5$, $n = 17$, tok algoritma je:
+
+\begin{center}
+\begin{tabular}{cccl}
+\toprule
+Bit $d[i]$ & Kvadriranje & Množenje & Međurezultat \\
+\midrule
+1 & $1^2 = 1$ & $1 \cdot 5 = 5$ & $5$ \\
+0 & $5^2 = 25 \equiv 8$ & / & $8$ \\
+1 & $8^2 = 64 \equiv 13$ & $13 \cdot 5 = 65 \equiv 14$ & $14$ \\
+1 & $14^2 = 196 \equiv 9$ & $9 \cdot 5 = 45 \equiv 11$ & $11$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Rezultat: $5^{11} \bmod 17 = 11$, što se može verifikovati računski.
+
+\subsection{Vremenska ranjivost algoritma}
+
+Ključno zapažanje, ilustrirano dijagramom toka na slici \ref{fig:sqm_flow}, je da algoritam iz isječka koda \ref{lst:sqm} \textbf{ne izvodi isti broj operacija za sve vrijednosti bita eksponenta}:
+
+\begin{itemize}
+\item Za $d[i] = 0$: izvodi se \textbf{samo kvadriranje} (jedna modularna multiplikacija)
+\item Za $d[i] = 1$: izvodi se \textbf{kvadriranje i množenje} (dvije modularne multiplikacije)
+\end{itemize}
+
+Svaka dodatna modularna multiplikacija dodaje mjerljiv prosječan trošak u CPU ciklusima. Razlika u trajanju po bitu jednaka je prosječnom trajanju jedne \texttt{mulmod} operacije, i to je izvor timing side-channel ranjivosti koju analiziramo u ovom radu.
+
+\section{Side-channel napadi}
+
+\subsection{Definicija i klasifikacija}
+
+Side-channel napad iskorištava informacije koje "cure" iz fizičke realizacije kriptografskog sistema, a ne iz matematičke slabosti algoritma \cite{mangard2007}. Za razliku od kriptoanalize koja napada matematičku strukturu, side-channel napadi mjere fizički mjerljive veličine koje povezuju sa tajnim podacima. Glavne kategorije side-channel napada su:
+\\
+
+\textbf{Timing napadi.}
+Mjeri se trajanje kriptografskih operacija. Signal može biti apsolutno trajanje, relativna razlika između operacija ili statistička distribucija trajanja \cite{kocher1996}.
+\\
+
+\textbf{Analiza potrošnje energije (\textit{power analysis}).}
+Analizira se potrošnja uređaja na kojem se izvršava kriptografski sistem. Simple power analysis (SPA) vizualno analizira pojedinačne tragove strujne potrošnje, a differential power analysis (DPA) koristi statističku analizu većeg broja tragova s različitim ulaznim podacima \cite{kocher1999}.
+\\
+
+\textbf{Elektromagnetski napadi.}
+Mjeri se elektromagnetna emisija uređaja tokom kriptografske operacije i izvodi se analiza signala. Primjenjivi su i bez fizičkog kontakta s uređajem \cite{gandolfi2001}.
+\\
+
+\textbf{Cache napadi.}
+Iskorištavaju zajednički Last Level Cache (LLC) na višejezgrenim procesorima, gdje napadač može mjeriti vrijeme pristupa cache memoriji nakon njenog brisanja \cite{yarom2014}. Detaljno su opisani u sekciji \ref{sec:cache_attacks}.
+\\
+
+\textbf{Akustični napadi.}
+Vrši se analiza zvukova koje emituju komponente računara tokom rada \cite{genkin2014}.
+
+\subsection{Kocher-ov timing napad (1996)}
+\label{sec:kocher}
+
+Paul Kocher je 1996. godine demonstrirao da naivne implementacije Diffie-Hellman, RSA, DSS i sličnih protokola otkrivaju informaciju o privatnom ključu kroz trajanje operacije \cite{kocher1996}.
+
+Osnovna ideja napada je sljedeća: napadač bira skup mjerenih poruka i za svaku bilježi trajanje kriptografske operacije. Mjerenja se grupišu prema hipotezi o vrijednosti pojedinog bita ključa. Ako je hipoteza ispravna, grupe mjerenja imat će statistički različite distribucije, jer je tajni bit konzistentno utjecao na trajanje. Ako je hipoteza pogrešna, distribucije će biti identične (šum).
+
+Napad zahtijeva da napadač može:
+\begin{enumerate}
+\item Slati proizvoljne poruke na kriptografsku funkciju, i
+\item Mjeriti trajanje operacije s dovoljnom preciznošću.
+\end{enumerate}
+
+\noindent U originalnom radu, Kocher je ciljao smart kartice koje nisu imale nikakvu zaštitu od timing napada. Pokazao je da je moguće rekonstruisati privatni ključ uz nekoliko stotina do nekoliko hiljada mjerenja.
+
+\subsection{Brumley-Boneh mrežni napad (2003)}
+
+Brumley i Boneh su 2003. godine proširili Kocher-ov napad na mrežni scenarij \cite{brumley2003}. Napadali su stvarni OpenSSL server na lokalnoj mreži, uzimajući u obzir mrežnu latenciju kao dodatni izvor šuma. Korištenjem tehnika kao što su:
+\begin{itemize}
+\item Slanje velikog broja zahtjeva za svaki bit,
+\item Pažljiv odabir poruka koji pojačava timing razliku, i
+\item Statistička analiza razlika u latenciji
+\end{itemize}
+\noindent uspjeli su rekonstruisati faktor RSA privatnog ključa. Ovaj napad je imao direktan praktičan utjecaj: OpenSSL je u verziji 0.9.7 implementirao RSA blinding kao kontramjeru.
+
+\subsection{Cache timing side-channel napadi}
+\label{sec:cache_attacks}
+
+Za razliku od timing napada koji mjere ukupno trajanje operacije, cache timing side-channel napadi prate fizički pristup specifičnim memorijskim adresama kroz zajednički CPU cache. Na modernim višejezgrenim procesorima sva jezgra dijele LLC (Last Level Cache, tipično L3) i ovo dijeljenje, kombinovano s činjenicom da procesi koji koriste istu dijeljenu biblioteku (\texttt{.so} fajl) dijele i fizičke memorijske stranice te biblioteke, stvara tajni kanal između napadača i žrtve.
+
+\subsubsection{Flush+Reload}
+
+Flush+Reload napad \cite{yarom2014} odvija se u tri koraka koji se ponavljaju:
+
+\begin{enumerate}
+\item \textbf{Flush:} Napadač uklanja specifičnu cache liniju koristeći \texttt{clflush} instrukciju. Ova instrukcija je dostupna korisniku bez privilegija i garantovano uklanja adresu iz svih nivoa cache-a.
+\item \textbf{Čekanje:} Napadač čeka dovoljno dugo da žrtva izvrši ciljanu operaciju.
+\item \textbf{Reload:} Napadač mjeri kašnjenje ponovnog učitavanja (reload) te cache linije. Kratka latencija ($\approx$ L1/L2/LLC latencija, npr. 100 do 400 ciklusa) znači da je žrtva pristupila adresi, odnosno \textit{cache hit}, a duga latencija ($\approx$ DRAM latencija, npr. 500 do 1000 ciklusa) znači da žrtva nije pristupila adresi, odnosno \textit{cache miss}.
+\end{enumerate}
+
+\noindent Slika \ref{fig:flush_reload_phases} ilustrira ove tri faze i dva moguća ishoda.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[>=stealth,
+    box/.style={rectangle, draw, rounded corners, minimum height=0.9cm, text centered, font=\small}]
+
+\node[box, fill=gray!15, minimum width=2.8cm] (flush) at (0,0) {Flush (\texttt{clflush})};
+\node[box, minimum width=3cm] (wait) at (4.2,0) {Žrtva izvršava RSA};
+\node[box, fill=gray!15, minimum width=2.8cm] (reload) at (8.7,0) {Reload (mjerenje)};
+
+\node[font=\footnotesize\bfseries, above=0.15cm of flush] {Faza 1};
+\node[font=\footnotesize\bfseries, above=0.15cm of wait] {Faza 2};
+\node[font=\footnotesize\bfseries, above=0.15cm of reload] {Faza 3};
+
+\draw[->, thick] (flush) -- (wait);
+\draw[->, thick] (wait) -- (reload);
+
+\node[box, minimum width=4cm, font=\scriptsize] (hit) at (6.7,-1.8) {Cache hit  $\Rightarrow$ $d_i = 1$};
+\node[box, minimum width=4cm, font=\scriptsize] (miss) at (10.7,-1.8) {Cache miss  $\Rightarrow$ $d_i = 0$};
+
+\draw[->, thick] (reload.south) -- ++(0,-0.4) -| (hit.north);
+\draw[->, thick] (reload.south) -- ++(0,-0.4) -| (miss.north);
+
+\end{tikzpicture}
+\caption{Faze Flush+Reload napada}
+\label{fig:flush_reload_phases}
+\end{figure}
+
+Ključni preduvjet je \textbf{dijeljena memorija}: i napadač i žrtva moraju imati mapiranu istu fizičku stranicu. Ovo je automatski zadovoljeno za dijeljene biblioteke (npr.\ \texttt{libc.so}) gdje operativni sistem mapira jednu kopiju koda u fizičku memoriju, a oba procesa vide iste fizičke cache linije.
+
+U kontekstu RSA napada, napadač cilja funkciju uslovnog množenja koja se poziva \textit{samo} kada je bit eksponenta jednak 1. Kada žrtva izvrši dekriptovanje pri čemu je ciljani bit eksponenta jednak 1, CPU učitava cache liniju te funkcije i napadač detektuje cache hit. Kada je bit jednak 0, funkcija se ne poziva i napadač detektuje cache miss.
+
+\subsubsection{Prime+Probe}
+
+Prime+Probe napad ne zahtijeva dijeljenu memoriju između napadača i žrtve, što ga čini primjenjivim čak i između virtualnih mašina. Napadač \textit{puni} (Prime) skup cache linija (cache set) vlastitim podacima, čeka da žrtva izvrši operaciju, a potom mjeri kašnjenje ponovnog pristupa (Probe) tim linijama. Ako je žrtva pristupila adresama koje mapiraju u iste cache linije, napadačeve linije su istisnute, što rezultira sporijim pristupom. Ovaj napad je složeniji za implementaciju i daje slabiji signal od Flush+Reload, ali funkcioniše i u scenarijima bez dijeljene memorije.
+
+\subsection{Kontramjera: Constant-time implementacija}
+\label{sec:ct_theory}
+
+Constant-time implementacija je tehnika koja garantuje da trajanje kriptografske operacije ne zavisi od tajnih podataka. Princip je eliminacija uslovnog grananja (\textit{branchless programming}, programiranje bez grananja): umjesto \texttt{if-else} konstrukcije koja izvršava različit broj operacija za različite vrijednosti bita, uvijek se izvršavaju obje operacije (i kvadriranje i množenje), a rezultat se bira pomoću \textit{conditional move} (\texttt{cmov}) instrukcije ili aritmetičkog maskiranja, bez ikakvog skoka u kontrolnom toku. Na taj način, CPU izvršava identičan broj operacija i pristupa istim memorijskim adresama bez obzira na vrijednost bita, čime se eliminira i timing i cache side-channel. Konkretna implementacija opisana je u sekciji \ref{sec:ct_impl}.
+
+\subsection{Kontramjera: RSA blinding}
+\label{sec:blinding_theory}
+
+RSA blinding je kontramjera uvedena u OpenSSL nakon Brumley-Boneh napada \cite{brumley2003}.  Zove se blinding ili zasljepljivanje jer "krije" podatke koji se obrađuju od vanjskih posmatrača. Princip je nasumičan odabir ulaza u eksponencijaciji:
+
+\begin{enumerate}
+\item Odabere se nasumičan $r$ takav da $\gcd(r, n) = 1$.
+\item Izračuna se blinded ulaz: $M' = M \cdot r^e \bmod n$.
+\item Eksponencijacija: $S' = (M')^d \bmod n$.
+\item Unblinding: $S = S' \cdot r^{-1} \bmod n = M^d \bmod n$.
+\end{enumerate}
+
+Budući da napadač ne poznaje $r$, ne može povezati svoje poznate ulaze s internim međuvrijednostima. U realnom RSA s višepreciznom aritmetikom, ovo maskira operand-zavisne vremenske varijacije. Međutim, blinding ne mijenja eksponent $d$ i kontrolni tok ostaje identičan, što ima implikacije za branch-zavisna vremenska curenja analizirana u poglavlju \ref{ch:rezultati}.
+
+\subsection{Model u ovom radu}
+
+U ovom radu analiziran je lokalni timing napad s precizno definisanim modelom:
+\\
+
+\textbf{Napadač.}
+Lokalni korisnik na istoj mašini, bez privilegija superkorisnika.
+\\
+
+\textbf{Mogućnosti napada.}
+Pokretanje vlastitog koda i mjerenje trajanja kriptografskih operacija u CPU ciklusima. U ovom radu koriste se dva različita modela napadača, ovisno o eksperimentu:
+
+\begin{itemize}
+\item \textbf{Eksperimenti 1, 2, 4, 5 i 6 (karakterizacija signala):} Napadač može pozvati modularnu eksponencijaciju s proizvoljno odabranim eksponentima, uključujući parove koji se razlikuju samo u jednom bitu. Tajni ključ $S$ nije relevantan za ove eksperimente jer se napad bavi mjerenjem timing razlike između eksponenata koje napadač sam konstruiše.
+\item \textbf{Eksperiment 3 (slijepa rekonstrukcija):} Napadač ne poznaje vrijednost tajnog ključa $S$ i nikada je ne vidi. Jedino što mu je dostupno jesu izmjerena trajanja: koliko dugo traje eksponencijacija s tajnim ključem za odabranu bazu $M$, te koliko bi trajala da je samo $i$-ti bit tog ključa bio obrnut i tu izmjenu sistem primjenjuje interno, na skrivenom $S$. Iz razlike tih trajanja napadač zaključuje koja je bila izvorna vrijednost bita i tako rekonstruiše ključ bit po bit \cite{kocher1996}.
+\end{itemize}
+
+\textbf{Ograničenja napada.}
+Nema pristupa memoriji procesa žrtve; nema mrežnog pristupa; nema fizičkog pristupa hardveru.
+\\
+
+\textbf{Tajna.}
+Privatni eksponent $d$ (64-bitni u ovom eksperimentu).
+\\
+
+\textbf{Javno poznato.}
+Baza $M$, modulus $n$, broj bita eksponenta.
+\\
+
+Model prijetnji za Eksperiment 3 odgovara Kocher-ovom originalnom scenariju \cite{kocher1996}: napadač ne zna $S$ i rekonstruiše ga isključivo iz izmjerenih trajanja. Ovaj eksperiment demonstrira mehanizam curenja informacija pod idealiziranim lokalnim uslovima. Dok u realnom scenariju napadač bi imao ograničeniji pristup, npr.\ samo mrežni timing kao kod Brumley i Boneh \cite{brumley2003}, što bi zahtijevalo više mjerenja, ali bi temeljni mehanizam ostao isti.
+
+Ovakav pristup je praktično primjenjiv svuda gdje postoji API za dekriptovanje: na smart karticama i HSM (\textit{Hardware Security Module}) uređajima, u dijeljenim kriptografskim servisima, te u TLS\,1.2 i starijim handshake protokolima s RSA ključnom razmjenom. U svim tim slučajevima napadač može slati pažljivo odabrane ulaze i mjeriti koliko traje svaki odgovor, bez ikakvog direktnog uvida u privatni ključ.
+
+\section{Statističke metode u analizi side-channel napada}
+\label{sec:statistika}
+
+\subsection{Problem signala i šuma}
+
+Trajanje kriptografskih operacija na modernom CPU-u nije konstantno. Brojni faktori doprinose varijabilnosti:
+
+\begin{itemize}
+\item \textbf{Promašaji cache-a}: Pristup memoriji koja nije u L1/L2/L3 cache-u dodaje stotine ciklusa latencije.
+\item \textbf{Predikcija grananja}: Procesor predviđa smjer skokova; pogrešna predikcija dodaje kaznu od 10 do 20 ciklusa.
+\item \textbf{OS preempcija}: Operativni sistem može prekinuti izvršavanje procesa u bilo kom trenutku (context switch).
+\item \textbf{TLB i memorijske barijere}: Invalidacija prijevodnog međuspremnika (TLB) i memorijske barijere dodaju varijabilno kašnjenje.
+\item \textbf{Toplotno ograničavanje}: Pregrijani procesor smanjuje frekvenciju, povećavajući trajanje.
+\end{itemize}
+
+\noindent Ukupni šum $\sigma$ u distribuciji trajanja obično je daleko veći od signala $\mu_1 - \mu_0$ koji odgovara jednoj \texttt{mulmod} operaciji. Omjer signal-šum (SNR) po jednom mjerenju definisan je kao:
+\begin{equation}
+\text{SNR} = \frac{|\mu_1 - \mu_0|}{\sigma_{\text{pool}}}
+\label{eq:snr}
+\end{equation}
+
+\noindent gdje su $\mu_1$ i $\mu_0$ srednje vrijednosti trajanja za $\text{bit}=1$ i $\text{bit}=0$, a $\sigma_{\text{pool}}$ je ujedinjena standardna devijacija. SNR je ključna metrika jer određuje \textbf{izvodljivost napada}: ako je SNR visok, jedno mjerenje je dovoljno za detekciju bita; ako je nizak, napadač mora prikupiti mnogo mjerenja i usrednjiti ih. Ova veličina je po formi identična apsolutnoj vrijednosti Cohen-ovog $d$ (jednačina \ref{eq:cohens_d}): SNR $= |d|$. Obje metrike se koriste jer $d$ ima standardiziranu interpretaciju veličine efekta (mali/srednji/veliki), dok SNR direktno određuje minimalan broj mjerenja $K_{\min}$ potrebnih za uspješan napad. U ovom eksperimentu SNR $= |d| \approx 0{,}134$, što znači da je signal oko 7,5 puta manji od šuma i da je pojedinačno mjerenje nepouzdano.
+
+\subsection{Usrednjavanje i centralna granična teorema}
+
+Temeljni princip koji omogućava timing napad uprkos niskom SNR-u po jednom mjerenju je \textit{usrednjavanje} (averaging). Centralna granična teorema garantuje da srednja vrijednost $K$ nezavisnih mjerenja konvergira ka pravoj sredini bez obzira na oblik distribucije, što je od ključne važnosti jer distribucije CPU trajanja nisu normalne. Ako napadač prikupi $K$ nezavisnih mjerenja za isti bit i usrednji ih, standardna devijacija usrednjenog procjenjitelja opada prema:
+\begin{equation}
+\sigma_K = \frac{\sigma}{\sqrt{K}}
+\label{eq:averaging}
+\end{equation}
+
+Signal ostaje konstantan ($\mu_1 - \mu_0$), a šum opada kao $1/\sqrt{K}$. Minimalan broj mjerenja $K_{\min}$ potrebnih da SNR$_K > r$ (tj. da signal bude $r$ puta veći od šuma) je:
+\begin{equation}
+K_{\min} = \left(\frac{r}{\text{SNR}}\right)^2
+\label{eq:kmin}
+\end{equation}
+
+\noindent Za 95\% tačnost klasifikatora (\textit{threshold}) na normalnim distribucijama, potrebno je $r \approx 2$, što za SNR $= 0{,}134$ daje $K_{\min} = (2 / 0{,}134)^2 \approx 223$.
+
+\subsection{Welch-ov t-test}
+
+U našem eksperimentu, Welch-ov t-test \cite{welch1947} služi za testiranje nulte hipoteze $H_0: \mu_0 = \mu_1$, odnosno da ne postoji razlika u trajanju operacije između slučajeva bit=0 i bit=1. Odbacivanje $H_0$ potvrđuje da timing razlika postoji i da je statistički značajna, a ne rezultat slučajnog šuma.
+
+Također, Welch-ova varijanta ne pretpostavlja jednakost varijansi grupa. Ovo je bitno u kontekstu vremenskih mjerenja jer operacije za bit=0 (samo kvadriranje) i bit=1 (kvadriranje i množenje) mogu imati različite obrasce pristupa memoriji i cache-u, što dovodi do različitih varijansi. Statistika testa je:
+\begin{equation}
+t = \frac{\bar{X}_0 - \bar{X}_1}{\sqrt{s_0^2/n_0 + s_1^2/n_1}}
+\label{eq:ttest}
+\end{equation}
+
+\noindent gdje su $\bar{X}_i$, $s_i^2$ i $n_i$ redom srednja vrijednost, varijansa i broj uzoraka za grupu $i$.
+
+\subsection{Mann-Whitney U test}
+
+Mann-Whitney U test \cite{mann1947} koristi se u ovom radu kao dopunska provjera rezultata Welch-ovog t-testa. Dok t-test pretpostavlja da su podaci normalno distribuirani, Mann-Whitney U test ne zahtijeva nikakvu pretpostavku o obliku distribucije. Ovo je posebno važno za distribucije trajanja CPU operacija, koje tipično imaju dugačak desni rep uzrokovan povremenim cache promašajima i OS preempcijama, te stoga nisu Gaussovske.
+
+Test se zasniva na rangiranju svih uzoraka iz obje grupe zajedno i poređenju pozicija rangova između grupa. Ako mjerenja za bit=1 konzistentno zauzimaju više rangove (duže traju), test će to detektovati. Korištenjem i parametarskog (Welch) i neparametarskog (Mann-Whitney) testa, dobijamo  potvrdu da uočena razlika nije posljedica distribucijskih pretpostavki.
+
+\subsection{Cohen-ova mjera veličine efekta}
+
+Statistička značajnost (p-vrijednost) sama po sebi nije dovoljna za procjenu izvodljivosti napada. Uz dovoljno veliki uzorak, bilo koja razlika, pa i trivijalno mala, postaje statistički značajna. Cohen-ov $d$ \cite{cohen1988} rješava ovaj problem mjereći \textbf{praktičnu veličinu} razlike između dvije grupe, nezavisno od broja uzoraka:
+\begin{equation}
+d = \frac{\mu_1 - \mu_0}{\sigma_{\text{pool}}}
+\label{eq:cohens_d}
+\end{equation}
+
+\noindent gdje je $\sigma_{\text{pool}} = \sqrt{((n_0-1)s_0^2 + (n_1-1)s_1^2)/(n_0+n_1-2)}$ ujedinjena standardna devijacija.
+Standardna interpretacija \cite{cohen1988}: $|d| < 0{,}2$ mali efekat; $0{,}2 \leq |d| < 0{,}5$ srednji efekat; $0{,}5 \leq |d| < 0{,}8$ srednje-veliki efekat; $|d| \geq 0{,}8$ veliki efekat.
+
+U kontekstu timing napada, Cohen-ov $d$ kvantificira koliko su distribucije trajanja za bit=0 i bit=1 razdvojene. Mali $d$ (kao naš $\approx 0{,}134$) znači da se distribucije jako preklapaju i da napadač ne može pouzdano klasificirati jedan uzorak. Međutim, mali $d$ ne znači da napad ne funkcioniše: uz usrednjavanje $K$ mjerenja, efektivni $d$ raste kao $d\sqrt{K}$, pa i mali efekt postaje detektabilan s dovoljno mjerenja. Cohen-ov $d$ direktno određuje i minimalnu veličinu uzorka za napad (jednačina \ref{eq:kmin}).
+
+\subsection{Upareni t-test}
+
+U ovom eksperimentu, mjerenja su prirodno sparena: za istu baznu vrijednost mjere se trajanja s bit=0 i bit=1 pod istim eksperimentalnim uslovima (stanje cache-a, frekvencija procesora, pozadinski procesi). Upareni t-test (paired t-test) iskorištava ovu strukturu podataka. Umjesto da poredi dvije nezavisne grupe, test analizira razlike unutar svakog para, čime se eliminira varijansa koja potiče od razlika između mjerenja (npr.\ različito opterećenje sistema u različitim trenucima). Statistika testa je:
+\begin{equation}
+t = \frac{\bar{D}}{s_D / \sqrt{n}}
+\label{eq:paired_t}
+\end{equation}
+
+\noindent gdje je $\bar{D}$ srednja vrijednost parnih razlika $D_i = T_{i,1} - T_{i,0}$, $s_D$ standardna devijacija razlika, a $n$ broj parova. Ključna prednost je što je $s_D$ tipično znatno manji od $\sigma_{\text{pool}}$ jer se faktori šuma koji su zajednički za oba mjerenja u paru međusobno poništavaju, čime se efektivno povećava statistička snaga testa.
+
+\subsection{Bootstrap interval povjerenja}
+
+Parametarski intervali povjerenja pretpostavljaju normalnost distribucije, što za iskošene distribucije CPU trajanja nije opravdano. Bootstrap metoda \cite{efron1979} procjenjuje interval povjerenja bez ikakvih distribucijskih pretpostavki. Postupak: iz originalnog uzorka uzima se $B$ nasumičnih uzoraka s ponavljanjem (resampling), za svaki se računa statistika interesa (u našem slučaju razlika sredina), a granice intervala su odgovarajući procenti empiričke distribucije.
+
+U kontekstu ovog rada, bootstrap interval povjerenja za $\Delta = \mu_1 - \mu_0$ daje raspon prihvatljivih vrijednosti za pravu razliku u trajanju. Ako 95\% interval ne sadrži nulu, možemo s visokom pouzdanošću tvrditi da razlika postoji. Koristi se $B = 10\,000$ iteracija.
+
+\subsection{Power analiza}
+
+Power analiza je ključan korak u planiranju eksperimenta jer određuje \textbf{minimalan broj uzoraka} $N_{\min}$ potreban za pouzdanu detekciju efekta dane veličine, prije nego što se eksperiment uopće provede. Za timing napad, ovo direktno odgovara na pitanje: koliko mjerenja napadač mora prikupiti da bi napad bio izvodljiv? Za dvostrani t-test \cite{cohen1988}:
+\begin{equation}
+N_{\min} = \left(\frac{z_{1-\alpha/2} + z_{1-\beta}}{d}\right)^2
+\label{eq:power}
+\end{equation}
+
+\noindent gdje je $d$ Cohen-ov $d$, $z$ kvantili standardne normalne distribucije, $\alpha$ vjerovatnoća lažnog pozitiva, a $(1-\beta)$ željena statistička snaga (vjerovatnoća detekcije stvarnog efekta). Za $\alpha = 0{,}05$, snagu $= 0{,}80$ i $d = 0{,}134$: $N_{\min} \approx 438$ po grupi. Ovim se zatvara krug između veličine efekta i praktičnosti napada: mali efekat zahtijeva više mjerenja, što znači duži napad.
+
+\section{Hardverske karakteristike relevantne za eksperiment}
+
+\subsection{Time Stamp Counter (TSC)}
+
+Za precizno mjerenje trajanja operacija koristi se TSC (Time Stamp Counter), 64-bitni registar koji se čita instrukcijama \texttt{RDTSC} i \texttt{RDTSCP}. Na procesoru Intel i5-1335U (Raptor Lake), TSC ima garancije \texttt{constant\_tsc} (raste po konstantnoj stopi neovisno o frekvenciji procesora) i \texttt{nonstop\_tsc} (ne pauzira u stanjima štednje energije (\textit{power-saving})) \cite{intel_sdm}, čime se osigurava pouzdana baza za mjerenje.
+
+Na \textit{out-of-order} procesorima, instrukcije mogu biti izvršavane izvan programskog redoslijeda. Intel preporučuje \cite{intel_bench} serijalizaciju mjernog prozora: \texttt{CPUID} $\to$ \texttt{RDTSC} na početku, \texttt{RDTSCP} $\to$ \texttt{CPUID} na kraju. \texttt{CPUID} djeluje kao barijera koja garantuje povlačenje (\textit{retirement}) svih prethodnih instrukcija, čime se osigurava da mjerni prozor obuhvata tačno ciljanu operaciju.
+
+\subsection{Izvori šuma u mjerenjima}
+
+Izvori šuma u timing mjerenjima (opisani u sekciji \ref{sec:statistika}) zahtijevaju primjenu mjera za kontrolu eksperimentalnih uslova: fiksiranu frekvenciju procesora, CPU afinitet i zagrijavanje cache-a. Detalji ovih mjera opisani su u poglavlju \ref{ch:implementacija}.
+
+Sa ovim teorijskim i statističkim temeljima uspostavljenim, naredno poglavlje opisuje eksperimentalni dizajn i implementacijske odluke koje prevode ove principe u mjerljive i ponovljive rezultate.

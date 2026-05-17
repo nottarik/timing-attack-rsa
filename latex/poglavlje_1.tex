@@ -1,0 +1,45 @@
+% poglavlje_1.tex — Uvod
+
+\chapter{Uvod}
+\label{ch:uvod}
+
+\section{Obrazloženje teme}
+\label{sec:obrazlozenje}
+
+Sigurnosni protokoli poput HTTPS-a ili SSH-a u pozadini koriste asimetrične kriptografske algoritme da uspostave sigurnu vezu, a RSA je među njima jedan od najrasprostranjenijih. Sigurnost RSA-a se zasniva na težini faktorizacije proizvoda dva vrlo velika prosta broja \cite{rivest1978}.
+
+Matematička robusnost kriptografskog algoritma ne implicira i sigurnost njegove konkretne implementacije. Softver može nenamjerno otkriti informacije o tajnom ključu kroz mjerljive fizičke popratne efekte kao što je vrijeme izvršavanja koda ili varijacije u naponu uređaja na kojem je pokrenut algoritam. Takvi napadi se klasifikuju kao napadi bočnim kanalima (\textit{side-channel attacks}), pri čemu se umjesto matematičkih slabosti napada fizički proces izvođenja operacija.
+
+Standardna implementacija RSA modularne eksponencijacije zasniva se na algoritmu square-and-multiply. U njemu se za svaki bit privatnog eksponenta čija je vrijednost 1 izvodi dodatna operacija množenja koja nije prisutna kada je vrijednost bita 0. Budući da to jedno množenje unosi mjerljivo vremensko odstupanje od nekoliko desetina CPU ciklusa, napadač koji može mjeriti razlike u trajanju operacija dešifriranja dovoljan broj puta može statističkom metodom usrednjavanja, bit po bit, rekonstruisati tajni ključ. Ovo je Paul Kocher demonstrirao 1996. godine na stvarnim uređajima \cite{kocher1996}, a Jean-François Dhem i koautori su pokazali konkretnu praktičnu realizaciju napada \cite{dhem1998}. Nekoliko godina kasnije, Brumley i Boneh su pokazali da napad funkcioniše i kroz mrežu, na različitim platformama i implementacijama, ciljajući stvarni OpenSSL server \cite{brumley2003}.
+
+RSA je odabran kao cilj analize jer je najrasprostranjeniji asimetrični algoritam u postojećim sistemima, a square-and-multiply algoritam pruža jasan i izolovan timing signal pogodan za eksperimentalnu demonstraciju.
+
+Za razliku od Brumley i Boneh koji su analizirali mrežni OpenSSL server, ovaj rad demonstrira timing napad u lokalnom okruženju na modernom procesoru s modernijom arhitekturom i provodi potpunu rekonstrukciju 64-bitnog privatnog ključa isključivo iz timing mjerenja.
+
+Suštinski istraživački problem ovog rada je detekcija slabog signala u okruženju sa visokim nivoom šuma. Vremenska razlika koju unosi jedna operacija množenja zanemarljiva je u poređenju sa sistemskim šumom koji proizvode moderni procesori i operativni sistemi. Međutim, primjenom statističkih metoda usrednjavanja šum konvergira prema nuli, što omogućuje ekstrakciju tajnog ključa iz dovoljno velike serije uzoraka. Kako se ističe u sveobuhvatnom pregledu mikroarhitekturalnih timing napada \cite{ge2018}, upravo ova mogućnost ekstrakcije ključa iz naivnih implementacija čini sigurnost RSA algoritma i danas aktuelnom temom u kontekstu side-channel napada.
+
+Pored demonstracije ranjivosti, rad evaluira i kontramjere: constant-time implementaciju koja potpuno eliminiše leak, RSA blinding čija ograničenja demonstriraju razliku između branch-zavisnih i operand-zavisnih timing leaka, te utjecaj kompajlerskih optimizacija na sigurnost.
+
+\subsection{Doprinos rada}
+
+Konkretni doprinosi ovog rada su:
+\begin{itemize}
+  \item Statistička kvantifikacija timing leaka na modernom procesoru (Intel i5-1335U, Raptor Lake), uključujući šest komplementarnih statističkih testova, bootstrap intervale povjerenja i analizu statističke snage (\textit{power analysis}).
+  \item Potpuna slijepa rekonstrukcija 64-bitnog privatnog RSA ključa isključivo iz timing mjerenja sa 100\% tačnošću, pri čemu napadački kod nikada nije imao direktan pristup vrijednosti tajnog ključa.
+  \item Empirijska evaluacija tri kontramjere: constant-time implementacije, RSA blindinga i utjecaja kompajlerskih optimizacija.
+  \item Demonstracija Flush+Reload cache napada kao kvalitativno drugačijeg mehanizma detekcije s višestruko jačim signalom.
+\end{itemize}
+
+\section{Struktura rada}
+\label{sec:struktura}
+
+Poglavlje \ref{ch:teorija} obrađuje teorijske osnove neophodne za razumijevanje eksperimenta: RSA kriptosistem, square-and-multiply algoritam, klasifikaciju timing napada u kontekstu relevantne literature, te statističke metode korištene u analizi (t-test, Mann-Whitney U, Cohen-ov d, bootstrap intervali povjerenja, power analiza).
+
+Poglavlje \ref{ch:implementacija} dokumentuje eksperimentalnu metodologiju: obje varijante modularne eksponencijacije (\textit{naive} i \textit{constant-time}), mehanizam preciznog mjerenja CPU ciklusa pomoću \texttt{RDTSCP} instrukcije, te dizajn eksperimenta zasnovan na uparenom pristupu (\textit{paired approach}).
+
+Poglavlje \ref{ch:rezultati} predstavlja rezultate sedam provedenih eksperimenata: detekcija timing leaka, averaging napad, rekonstrukcija 64-bitnog ključa, sistematska multi-bit analiza, utjecaj kompajlerskih optimizacija, evaluacija RSA blindinga kao kontramjere, te Flush+Reload cache napad. Poglavlje se završava diskusijom o značaju rezultata.
+
+Poglavlje \ref{ch:zakljucak} sumira ključna postignuća, formuliše preporuke za sigurniju implementaciju i navodi ograničenja istraživanja te moguće pravce daljeg rada.
+
+U Prilogu \ref{app:hw_config} dokumentovana je konfiguracija eksperimentalnog okruženja i prikazani su ključni assembly isječci koji verificiraju ispravnost obje implementacije na razini mašinskog koda.
+
